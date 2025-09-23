@@ -1,8 +1,9 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import os, json
+import os
+import json
 import time
 from datetime import datetime
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 from dotenv import load_dotenv
 
 from langchain_groq import ChatGroq
@@ -14,7 +15,6 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFDirectoryLoader, JSONLoader
 from langchain_huggingface import HuggingFaceEmbeddings
 
-
 # -------------------------------------------------------------------
 # Load environment variables
 # -------------------------------------------------------------------
@@ -22,136 +22,92 @@ load_dotenv()
 groq_api_key = os.getenv("GROQ_API_KEY")
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
-
-# # -------------------------------------------------------------------
-# # Initialize LLM
-# # -------------------------------------------------------------------
-# def initialize_llm():
-#     return ChatGroq(
-#         groq_api_key=groq_api_key,
-#         model_name="llama-3.3-70b-versatile"
-#     )
+CORS(app)
 
 # -------------------------------------------------------------------
-# Prompt Template
+# LLM Prompt Template
 # -------------------------------------------------------------------
 def initialize_prompt():
     return ChatPromptTemplate.from_template("""
-You are CampusCopilot, an AI assistant for students. Your role is to provide strictly accurate information based only on the official college data sources provided.
+You are CampusCopilot, an AI assistant for students. Answer strictly based on the given {context} data.
 
-Response Rules:
-
-1) Use only the given {context} data. Do not infer or assume missing details.
-
-2) If the requested information is in {context}, give a clear, complete, and direct answer.
-
-3) If the requested information is not in {context}, reply with exactly:
-    - “Information not available in the current database.”
-
-4) If the information is related but incomplete or missing, reply with exactly:
-    - “This information is currently not available. For assistance, please contact the college helpdesk or refer to official resources.”
-
-5) Keep responses concise, factual, and context-specific to:
-    - Circulars & Notices
-    - Class Timetables
-    - Attendance Records
-    - Student Details
-    - Assignment Details
-
-6) Before finalizing your response:
-    - Check grammar, spelling, and sentence structure.
-    - Ensure the response is professional, easy to understand, and free from errors.
-    - Format the response in **Markdown only** (use headings, bullet points, or tables where appropriate).
-
-Do not add extra details beyond what is allowed.
+Rules:
+1) Use only {context}. Do not infer.
+2) If info is missing, reply exactly:
+    - "Information not available in the current database."
+3) Keep answers concise, factual, professional.
+4) Format in Markdown (headings, bullet points, tables).
 
 *Official College Data Sources:*  
 {context}
 
 *Query:* {input}
-"""
-)
+""")
 
 # -------------------------------------------------------------------
-# Build Vector Database (FAISS)
+# Initialize LLM & Vector DB
 # -------------------------------------------------------------------
 vectors = None
-
-# from langchain_huggingface import HuggingFaceEmbeddings
-
-# def process_documents():
-#     global vectors
-#     try:
-#         embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-#         loader = PyPDFDirectoryLoader("./Data")
-#         docs = loader.load()
-#         if not docs:
-#             raise ValueError("No PDF documents found in ./Data folder")
-#         text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
-#         final_docs = text_splitter.split_documents(docs)
-#         vectors = FAISS.from_documents(final_docs, embeddings)
-#         return True
-#     except Exception as e:
-#         print(f"Protocol database initialization error: {e}")
-#         return False
-
-
+retrieval_chain = None
 
 def initialize_llm():
-    model = "llama-3.1-8b-instant"  # <-- update if needed
     return ChatGroq(
-        groq_api_key=os.getenv("GROQ_API_KEY"),
-        model_name=model
+        groq_api_key=groq_api_key,
+        model_name="llama-3.1-8b-instant"
     )
 
-# 
-
 def process_documents():
-    global vectors
+    """Load PDFs and JSONs, split into chunks, and create FAISS vector DB."""
+    global vectors, retrieval_chain
     try:
         embeddings = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-MiniLM-L6-v2"
         )
 
         # Load PDFs
-        pdf_loader = PyPDFDirectoryLoader("../data",recursive=True)
+        pdf_loader = PyPDFDirectoryLoader("../data", recursive=True)
         pdf_docs = pdf_loader.load()
+        for doc in pdf_docs:
+            doc.metadata["source"] = getattr(doc, "file_path", "unknown")
 
-        # Load JSONs (loop over all JSON files in directory)
+        # Load JSONs
         json_docs = []
-        for filename in os.listdir("../data"):
-            if filename.endswith(".json"):
-                loader = JSONLoader(
-                    file_path=os.path.join("../data", filename),
-                    jq_schema=".",   # you can customize what fields to extract
-                    text_content=False
-                )
-                json_docs.extend(loader.load())
+        for root, _, files in os.walk("../data"):
+            for filename in files:
+                if filename.endswith(".json"):
+                    loader = JSONLoader(file_path=os.path.join(root, filename),
+                                        jq_schema=".", text_content=False)
+                    loaded_docs = loader.load()
+                    for doc in loaded_docs:
+                        doc.metadata["source"] = filename
+                    json_docs.extend(loaded_docs)
 
-        # Combine docs
         docs = pdf_docs + json_docs
-
         if not docs:
             print("⚠ No documents found in ../data")
             return False
 
-        # Split
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000, chunk_overlap=250
-        )
+        # Split documents into chunks
+        splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=250)
         final_docs = splitter.split_documents(docs)
 
-        # Vector DB
+        # Create FAISS vector store
         vectors = FAISS.from_documents(final_docs, embeddings)
+
+        # Initialize LLM + retrieval chain
+        llm = initialize_llm()
+        doc_chain = create_stuff_documents_chain(llm, initialize_prompt())
+        retriever = vectors.as_retriever(search_kwargs={"k": 8})  # fetch 8 relevant chunks
+        retrieval_chain = create_retrieval_chain(retriever, doc_chain)
+
+        print(f"✅ Loaded {len(final_docs)} document chunks into FAISS")
         return True
 
     except Exception as e:
         print(f"❌ Vector DB init error: {e}")
         return False
 
-
-# Initialize documents at startup
+# Initialize at startup
 if process_documents():
     print("Vector database initialized successfully")
 else:
@@ -160,43 +116,38 @@ else:
 # -------------------------------------------------------------------
 # API Endpoints
 # -------------------------------------------------------------------
-@app.route('/api/query', methods=['POST'])
+@app.route("/api/query", methods=["POST"])
 def process_query():
-    global vectors
-    if not vectors:
+    global retrieval_chain
+    if not retrieval_chain:
         return jsonify({"error": "Vector database not initialized"}), 500
 
-    data = request.json
+    data = request.get_json()
     query = data.get("query")
     if not query:
         return jsonify({"error": "No query provided"}), 400
 
     try:
-        llm = initialize_llm()
-        document_chain = create_stuff_documents_chain(llm, initialize_prompt())
-        retrieval_chain = create_retrieval_chain(vectors.as_retriever(), document_chain)
-
         start_time = time.time()
         response = retrieval_chain.invoke({"input": query})
         processing_time = time.time() - start_time
 
+        # Include context documents used
         context_data = [
             {"page_content": doc.page_content, "metadata": doc.metadata}
-            for doc in response["context"]
+            for doc in response.get("source_documents", [])
         ]
 
         return jsonify({
-            "answer": response["answer"],
+            "answer": response.get("answer", "Information not available in the current database."),
             "processing_time": processing_time,
             "context": context_data
         })
 
     except Exception as e:
-        print(e)
         return jsonify({"error": str(e)}), 500
 
-
-@app.route('/api/status', methods=['GET'])
+@app.route("/api/status", methods=["GET"])
 def get_status():
     return jsonify({
         "system": "online",
@@ -205,5 +156,5 @@ def get_status():
     })
 
 # -------------------------------------------------------------------
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', debug=True, port=5000)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", debug=True, port=5000)
