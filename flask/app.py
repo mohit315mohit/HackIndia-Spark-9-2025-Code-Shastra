@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import os
+import os, json
 import time
 from datetime import datetime
 from dotenv import load_dotenv
@@ -11,7 +11,7 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains import create_retrieval_chain
 from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import PyPDFDirectoryLoader
+from langchain_community.document_loaders import PyPDFDirectoryLoader, JSONLoader
 from langchain_huggingface import HuggingFaceEmbeddings
 
 
@@ -21,7 +21,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 load_dotenv()
 groq_api_key = os.getenv("GROQ_API_KEY")
 
-app = Flask(_name_)
+app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
 # # -------------------------------------------------------------------
@@ -60,7 +60,7 @@ def initialize_prompt():
 # -------------------------------------------------------------------
 vectors = None
 
-from langchain_huggingface import HuggingFaceEmbeddings
+# from langchain_huggingface import HuggingFaceEmbeddings
 
 # def process_documents():
 #     global vectors
@@ -87,27 +87,50 @@ def initialize_llm():
         model_name=model
     )
 
+# 
+
 def process_documents():
     global vectors
     try:
         embeddings = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-MiniLM-L6-v2"
         )
-        loader = PyPDFDirectoryLoader("./Data")
-        docs = loader.load()
+
+        # Load PDFs
+        pdf_loader = PyPDFDirectoryLoader("../data",recursive=True)
+        pdf_docs = pdf_loader.load()
+
+        # Load JSONs (loop over all JSON files in directory)
+        json_docs = []
+        for filename in os.listdir("../data"):
+            if filename.endswith(".json"):
+                loader = JSONLoader(
+                    file_path=os.path.join("../data", filename),
+                    jq_schema=".",   # you can customize what fields to extract
+                    text_content=False
+                )
+                json_docs.extend(loader.load())
+
+        # Combine docs
+        docs = pdf_docs + json_docs
+
         if not docs:
-            print("⚠ No PDF documents found in ./Data")
+            print("⚠ No documents found in ../data")
             return False
+
+        # Split
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=2000, chunk_overlap=200
         )
         final_docs = splitter.split_documents(docs)
+
+        # Vector DB
         vectors = FAISS.from_documents(final_docs, embeddings)
         return True
+
     except Exception as e:
         print(f"❌ Vector DB init error: {e}")
         return False
-
 
 
 # Initialize documents at startup
@@ -151,6 +174,7 @@ def process_query():
         })
 
     except Exception as e:
+        print(e)
         return jsonify({"error": str(e)}), 500
 
 
@@ -163,5 +187,5 @@ def get_status():
     })
 
 # -------------------------------------------------------------------
-if _name_ == '_main_':
+if __name__ == '__main__':
     app.run(host='0.0.0.0', debug=True, port=5000)
