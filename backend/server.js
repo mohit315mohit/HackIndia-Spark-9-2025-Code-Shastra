@@ -7,15 +7,17 @@ import { errorHandler, notFound } from './middlewares/errorMiddleware.js';
 import userRouter from './routes/userRoutes.js';
 import queryRouter from './routes/queryRoutes.js';
 import roomRouter from './routes/roomRoutes.js';
+import erpRouter from './routes/erpRoutes.js';
+import mapRouter from './routes/mapRoutes.js';
 
 
 // Initializations
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 6969;
 const app = express();
 
 // Middlewares
 app.use(cors({
-    origin: process.env.CORS
+    origin: "*"
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }))
@@ -23,9 +25,14 @@ app.use(express.urlencoded({ extended: true }))
 // ------------Routes------------
 app.use("/api/v0/auth", authRouter); // Authentication routes
 app.use("/api/v0/users", userRouter); // User management routes
-app.use("/api/query/:roomID", queryRouter); // Queryt routes
+app.use("/api/query", queryRouter); // Queryt routes
 app.use("/api/chat/room/create/:roomName/:userID", roomRouter); // Queryt routes
 
+// --------ERP Integration--------
+app.use("/api/v0/erp", erpRouter);
+
+// --------Maps Integration--------
+app.use("/api/v0/maps", mapRouter);
 
 
 // Error handling middleware
