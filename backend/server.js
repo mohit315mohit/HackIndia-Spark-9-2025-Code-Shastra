@@ -17,7 +17,7 @@ const app = express();
 
 // Middlewares
 app.use(cors({
-    origin: process.env.CORS
+    origin: "*"
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }))
@@ -25,7 +25,7 @@ app.use(express.urlencoded({ extended: true }))
 // ------------Routes------------
 app.use("/api/v0/auth", authRouter); // Authentication routes
 app.use("/api/v0/users", userRouter); // User management routes
-app.use("/api/query/:roomID", queryRouter); // Queryt routes
+app.use("/api/query", queryRouter); // Queryt routes
 app.use("/api/chat/room/create/:roomName/:userID", roomRouter); // Queryt routes
 
 // --------ERP Integration--------
